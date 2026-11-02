@@ -137,15 +137,7 @@
                             <div class="p-2 rounded-circle bg-primary-subtle text-primary">
                                 <i class="fa-solid fa-user-shield fs-5"></i>
                             </div>
-                            <div>
-                                <span class="fw-bold text-dark fs-6">Helmet Compliance</span>
-                                <div id="helmetConfidenceDisplay" class="small text-muted d-none">
-                                    <i class="fa-solid fa-gauge-high text-info me-1"></i>
-                                    <span>Confidence: </span>
-                                    <span id="helmetConfidenceValue" class="fw-bold text-dark">--</span>
-                                    <span id="helmetConfidenceLabel" class="badge ms-1"></span>
-                                </div>
-                            </div>
+                            <span class="fw-bold text-dark fs-6">Helmet Compliance</span>
                         </div>
                         <div id="statusHelmet" class="d-flex align-items-center gap-2">
                             <span class="badge bg-light text-muted border px-3 py-2 fs-6 fw-semibold">--</span>
@@ -400,33 +392,18 @@ document.getElementById('videoAnalysisForm').addEventListener('submit', function
             }
 
             // 1. Helmet Compliance
-            const helmetState = data.helmet_state || (data.helmet_status ? 'PASS' : 'FAIL');
-            renderParamBadge('statusHelmet', helmetState, data.helmet_status, 'FAIL');
-
-            // Display Actual Helmet Detection Confidence
-            const confBox = document.getElementById('helmetConfidenceDisplay');
-            const confVal = document.getElementById('helmetConfidenceValue');
-            const confLabel = document.getElementById('helmetConfidenceLabel');
-            if (confBox && data.helmet_confidence !== undefined && data.helmet_confidence !== null) {
-                confBox.classList.remove('d-none');
-                const confScore = Number(data.helmet_confidence);
-                const confPct = Math.round(confScore <= 1.0 ? confScore * 100 : confScore);
-                confVal.textContent = `${confPct}%`;
-
-                if (confPct >= 95) {
-                    confLabel.className = 'badge bg-success-subtle text-success border border-success ms-1';
-                    confLabel.textContent = 'Strong Helmet Detection (≥95%)';
-                } else if (confPct >= 85) {
-                    confLabel.className = 'badge bg-primary-subtle text-primary border border-primary ms-1';
-                    confLabel.textContent = 'Accepted Helmet (≥85%)';
-                } else if (confPct > 0) {
-                    confLabel.className = 'badge bg-warning-subtle text-warning border border-warning ms-1';
-                    confLabel.textContent = 'Below 85% Threshold (Needs Review)';
+            const helmetState = (data.helmet_state || (data.helmet_status ? 'PASS' : 'FAIL')).toUpperCase();
+            const statusHelmetContainer = document.getElementById('statusHelmet');
+            if (statusHelmetContainer) {
+                if (helmetState === 'PASS') {
+                    statusHelmetContainer.innerHTML = `<span class="badge bg-success-subtle text-success border border-success px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-check me-1"></i> PASS</span>`;
+                } else if (helmetState === 'FAIL') {
+                    statusHelmetContainer.innerHTML = `<span class="badge bg-danger-subtle text-danger border border-danger px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-xmark me-1"></i> FAIL</span>`;
                 } else {
-                    confLabel.className = 'badge bg-secondary-subtle text-secondary border ms-1';
-                    confLabel.textContent = 'Not Detected / Non-protective';
+                    statusHelmetContainer.innerHTML = `<span class="badge bg-warning-subtle text-warning-emphasis border border-warning px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-triangle-exclamation me-1"></i> NOT VERIFIED</span>`;
                 }
             }
+
             
             // 2. Lane Discipline
             const laneState = data.lane_state || (data.lane_status ? 'PASS' : 'FAIL');
@@ -439,14 +416,29 @@ document.getElementById('videoAnalysisForm').addEventListener('submit', function
             renderParamBadge('statusBalance', balanceState, data.balance_status, 'Violation');
 
             // 4. Foot Touch Detection
-            const footState = data.foot_touch_state || (data.foot_touch_status ? 'PASS' : 'FAIL');
             const footCount = data.foot_touch_count || 0;
-            const footText = footCount > 0 ? `${footCount} Violation${footCount > 1 ? 's' : ''}` : 'Violation';
-            renderParamBadge('statusFoot', footState, data.foot_touch_status, footText);
+            const statusFootContainer = document.getElementById('statusFoot');
+            if (statusFootContainer) {
+                if (footCount > 0 || !data.foot_touch_status) {
+                    const countStr = footCount === 1 ? '1 Event' : `${footCount} Events`;
+                    statusFootContainer.innerHTML = `<span class="badge bg-danger-subtle text-danger border border-danger px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-shoe-prints me-1"></i> DETECTED (${countStr})</span>`;
+                } else {
+                    statusFootContainer.innerHTML = `<span class="badge bg-success-subtle text-success border border-success px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-check me-1"></i> NOT DETECTED (0 Events)</span>`;
+                }
+            }
 
-            // 5. Braking Control
-            const brakingState = data.braking_state || (data.braking_status ? 'PASS' : 'FAIL');
-            renderParamBadge('statusBraking', brakingState, data.braking_status, 'Violation');
+            // 5. Braking Control (Sudden Braking Detection Only)
+            const bState = (data.braking_state || (data.braking_status ? 'PASS' : 'FAIL')).toUpperCase();
+            const statusBrakingContainer = document.getElementById('statusBraking');
+            if (statusBrakingContainer) {
+                if (bState === 'PASS') {
+                    statusBrakingContainer.innerHTML = `<span class="badge bg-success-subtle text-success border border-success px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-check me-1"></i> PASS</span>`;
+                } else if (bState === 'FAIL') {
+                    statusBrakingContainer.innerHTML = `<span class="badge bg-danger-subtle text-danger border border-danger px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-xmark me-1"></i> Sudden Braking Detected</span>`;
+                } else {
+                    statusBrakingContainer.innerHTML = `<span class="badge bg-warning-subtle text-warning-emphasis border border-warning px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-triangle-exclamation me-1"></i> NEEDS REVIEW</span>`;
+                }
+            }
 
             // Overall Score
             const scoreVal = (data.overall_score !== undefined && data.overall_score !== null) ? Math.round(data.overall_score) : 0;
@@ -517,8 +509,8 @@ function renderParamBadge(elementId, stateStr, isPass, violationText) {
     const container = document.getElementById(elementId);
     if (!container) return;
     const normalized = (stateStr || '').toUpperCase();
-    if (normalized === 'UNCLEAR' || normalized === 'NEEDS REVIEW' || normalized === 'NEEDS_REVIEW') {
-        container.innerHTML = `<span class="badge bg-warning text-dark border border-warning px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-circle-question me-1"></i> NEEDS REVIEW</span>`;
+    if (normalized === 'UNCLEAR' || normalized === 'NEEDS REVIEW' || normalized === 'NEEDS_REVIEW' || normalized === 'NOT VERIFIED' || normalized === 'NOT_VERIFIED') {
+        container.innerHTML = `<span class="badge bg-warning-subtle text-warning-emphasis border border-warning px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-triangle-exclamation me-1"></i> NOT VERIFIED</span>`;
     } else if (isPass || normalized === 'PASS') {
         container.innerHTML = `<span class="badge bg-success-subtle text-success border border-success px-3 py-2 fs-6 fw-bold"><i class="fa-solid fa-check me-1"></i> PASS</span>`;
     } else {

@@ -29,7 +29,7 @@ YOLO_BASE_MODEL_PATH = os.path.join(BASE_DIR, 'yolov8n.pt')
 HELMET_MODEL_PATH = os.path.join(SAVED_MODELS_DIR, 'helmet_detector.pt')
 
 # Dedicated Helmet / Headwear Detection Thresholds
-HELMET_CONF_THRESHOLD = float(os.environ.get('HELMET_CONF_THRESHOLD', 0.85))  # Minimum confidence (0.85 / 85%) to accept a genuine motorcycle helmet
+HELMET_CONF_THRESHOLD = float(os.environ.get('HELMET_CONF_THRESHOLD', 0.55))  # Minimum confidence (0.55 / 55%) to accept a genuine motorcycle helmet
 NO_HELMET_CONF_THRESHOLD = 0.50         # Minimum confidence to classify uncovered head
 OTHER_HEADWEAR_CONF_THRESHOLD = 0.45    # Minimum confidence to classify cap, hat, towel, scarf
 MIN_HEAD_ROI_WIDTH = 25                 # Minimum head ROI width in pixels (smaller = Needs Review)

@@ -60,6 +60,8 @@ def init_db():
             lane_status INTEGER NOT NULL,
             foot_touch_status INTEGER NOT NULL,
             balance_status INTEGER NOT NULL,
+            braking_status INTEGER DEFAULT 1,
+            braking_state TEXT DEFAULT 'PASS',
             overall_result TEXT NOT NULL,
             rf_prediction TEXT,
             overall_score REAL NOT NULL,
@@ -71,6 +73,14 @@ def init_db():
             FOREIGN KEY (candidate_id) REFERENCES candidates (candidate_id)
         )
     ''')
+
+    # Ensure braking_status and braking_state columns exist for existing databases
+    cursor.execute("PRAGMA table_info(evaluations)")
+    eval_cols = [row['name'] for row in cursor.fetchall()]
+    if 'braking_status' not in eval_cols:
+        cursor.execute("ALTER TABLE evaluations ADD COLUMN braking_status INTEGER DEFAULT 1")
+    if 'braking_state' not in eval_cols:
+        cursor.execute("ALTER TABLE evaluations ADD COLUMN braking_state TEXT DEFAULT 'PASS'")
     
     conn.commit()
     conn.close()
@@ -204,10 +214,10 @@ def save_evaluation(eval_data):
     cursor.execute('''
         INSERT INTO evaluations (
             candidate_id, auth_status, helmet_status, lane_status, 
-            foot_touch_status, balance_status, overall_result, 
-            rf_prediction, overall_score, mistakes_json, 
+            foot_touch_status, balance_status, braking_status, braking_state,
+            overall_result, rf_prediction, overall_score, mistakes_json, 
             video_path, processed_video_path, report_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         eval_data['candidate_id'],
         eval_data['auth_status'],
@@ -215,6 +225,8 @@ def save_evaluation(eval_data):
         eval_data['lane_status'],
         eval_data['foot_touch_status'],
         eval_data['balance_status'],
+        eval_data.get('braking_status', 1),
+        eval_data.get('braking_state', 'PASS'),
         eval_data['overall_result'],
         eval_data.get('rf_prediction', 'N/A'),
         eval_data['overall_score'],

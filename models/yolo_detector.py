@@ -158,10 +158,14 @@ class YoloDetector:
                 'details': f'Head ROI too small/distant for reliable classification ({w}x{h} px)'
             }
 
-        # 2. Blur / Motion blur check using Laplacian variance
+        # Check for fabric / textured cloth folds before blur check
         gray = cv2.cvtColor(head_roi, cv2.COLOR_BGR2GRAY) if len(head_roi.shape) == 3 else head_roi
         lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        if lap_var < self.blur_threshold:
+        edges = cv2.Canny(gray, 40, 120)
+        edge_density = float(np.mean(edges > 0))
+
+        # 2. Blur / Motion blur check using Laplacian variance (exempt high edge density fabric patterns)
+        if lap_var < self.blur_threshold and edge_density < 0.08:
             return {
                 'class': 'uncertain',
                 'confidence': 0.0,
@@ -273,6 +277,7 @@ class YoloDetector:
         # 2. Visor / Brim Detection (Horizontal structural edges)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blur, 40, 120)
+        edge_density = float(np.mean(edges > 0))
         lower_edges = edges[int(h * 0.35):int(h * 0.75), :]
         k_w = max(5, int(w * 0.28))
         h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_w, 1))
@@ -291,8 +296,9 @@ class YoloDetector:
         # 4. Specular Reflection Highlight on Curved Helmet Dome
         # A rigid helmet shell produces a concentrated highlight on curved dome
         crown_hsv = cv2.cvtColor(crown, cv2.COLOR_BGR2HSV)
-        highlight_mask = (crown_hsv[:, :, 2] >= 180) & (crown_hsv[:, :, 1] <= 45)
+        highlight_mask = (crown_hsv[:, :, 2] >= 160) & (crown_hsv[:, :, 1] <= 140)
         specular_ratio = float(np.mean(highlight_mask))
+        is_smooth_dome = (high_texture_ratio <= 0.20 and edge_density <= 0.07)
 
         # 5. Natural Scalp Hair Detection
         # Human hair on crown is dark (V < 55) with low saturation
@@ -317,7 +323,8 @@ class YoloDetector:
         is_bare_head = (
             (crown_skin > 0.15 and face_skin > 0.20) or
             (hair_ratio > 0.30 and face_skin > 0.22) or
-            (skin_ratio > 0.28 and crown_skin > 0.10)
+            (skin_ratio > 0.28 and crown_skin > 0.10 and face_skin > 0.10) or
+            (skin_ratio > 0.18 and ear_skin_ratio > 0.18)
         )
         if is_bare_head:
             conf = min(0.95, round(max(skin_ratio, face_skin, crown_skin), 2))
@@ -331,7 +338,6 @@ class YoloDetector:
         # Case B: Baseball Cap / Brimmed Hat
         # A baseball cap covers the crown but leaves ears, lower face/neck exposed,
         # or has a protruding brim with exposed ear/face skin underneath.
-        # (Motorcycle helmet visors also have horizontal lines, but the helmet shell covers ears/neck and crown).
         is_cap = (
             (ear_skin_ratio > 0.22 and crown_skin < 0.15 and hair_ratio > 0.15) or
             (brim_score > 0.25 and (ear_skin_ratio > 0.18 or face_skin > 0.22)) or
@@ -346,24 +352,27 @@ class YoloDetector:
             }
 
         # Case C: Printed Cloth / Scarf / Dupatta / Turban / Towel
-        if has_cloth_pattern or (high_texture_ratio > 0.55 and median_local_std > 24.0 and specular_ratio < 0.04):
+        # Check both color pattern variation and high edge/fold density
+        has_fabric_folds = (edge_density > 0.08) or (high_texture_ratio > 0.35 and specular_ratio < 0.40)
+        if has_cloth_pattern or has_fabric_folds or (high_texture_ratio > 0.45 and median_local_std > 20.0):
             return {
                 'class': 'other_headwear',
                 'confidence': 0.85,
                 'status': 'FAIL',
-                'details': f'Non-protective cloth/scarf headwear detected (texture: {high_texture_ratio:.2f})'
+                'details': f'Non-protective cloth/scarf headwear detected (texture: {high_texture_ratio:.2f}, folds: {edge_density:.2f})'
             }
 
         # Case D: Genuine Motorcycle Safety Helmet
         # Low crown skin (<= 0.12), ears enclosed by helmet shell (ear_skin_ratio <= 0.20),
         # low scalp hair on crown (<= 0.25), no non-protective cloth pattern,
-        # and rigid curved dome characteristics (specular highlight or smooth surface or helmet visor)
+        # and rigid curved dome characteristics (specular highlight or helmet visor with low skin)
         is_helmet = (
             crown_skin <= 0.12 and
             ear_skin_ratio <= 0.20 and
-            hair_ratio <= 0.25 and
+            (hair_ratio <= 0.25 or specular_ratio > 0.08) and
             not has_cloth_pattern and
-            (specular_ratio > 0.03 or high_texture_ratio <= 0.50 or brim_score > 0.20)
+            not has_fabric_folds and
+            (specular_ratio > 0.02 or is_smooth_dome or (specular_ratio > 0.015 and brim_score > 0.25))
         )
         if is_helmet:
             conf = round(min(0.98, 0.85 + max(specular_ratio, 0.05)), 2)
@@ -497,40 +506,106 @@ class YoloDetector:
                     cv2.putText(annotated_frame, f"Rider {rconf:.2f}", (rx1, max(20, ry1 - 10)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 191, 0), 2)
 
-                    # Extract Centered Head ROI (top 24% of rider, centered horizontally)
-                    # Prevents capturing wide background walls, neck scarves, or shoulders
-                    head_h = max(10, int(rh * 0.24))
+                    # Default Head ROI (top 26% of rider, centered horizontally)
+                    head_h = max(10, int(rh * 0.26))
                     head_y2 = min(ry2, ry1 + head_h)
-                    head_w = int(rw * 0.60)
+                    head_w = int(rw * 0.65)
                     cx = (rx1 + rx2) // 2
                     head_x1 = max(0, cx - head_w // 2)
                     head_x2 = min(w, cx + head_w // 2)
-
-                    head_roi = frame[ry1:head_y2, head_x1:head_x2]
                     detections['helmet_bbox'] = (head_x1, ry1, head_x2, head_y2)
+                    detections['head_region_found'] = True
 
-                    # Classify Headwear
-                    h_res = self.classify_head_roi(head_roi, rider_bbox=(rx1, ry1, rx2, ry2), frame=frame)
-                    detections['helmet_class'] = h_res['class']
-                    detections['helmet_status'] = h_res['status']
-                    detections['helmet_conf'] = h_res['confidence']
-                    detections['helmet_details'] = h_res['details']
+                    # 1. Use dedicated trained helmet model on upper rider region if available
+                    model_classified = False
+                    if self.helmet_model is not None:
+                        y_top = max(0, ry1 - int(rh * 0.05))
+                        y_bot = min(h, ry1 + int(rh * 0.55))
+                        x_left = max(0, rx1 - int(rw * 0.10))
+                        x_right = min(w, rx2 + int(rw * 0.10))
+                        upper_crop = frame[y_top:y_bot, x_left:x_right]
+                        if upper_crop.size > 0:
+                            try:
+                                h_results = self.helmet_model(upper_crop, verbose=False, conf=0.30)[0]
+                                if hasattr(h_results, 'boxes') and len(h_results.boxes) > 0:
+                                    best_box = None
+                                    best_c = 0.0
+                                    for box in h_results.boxes:
+                                        c_conf = float(box.conf[0])
+                                        if c_conf > best_c:
+                                            best_c = c_conf
+                                            best_box = box
+                                    if best_box is not None:
+                                        cls_idx = int(best_box.cls[0])
+                                        cls_names = getattr(h_results, 'names', {})
+                                        norm_cls = self.normalize_class_name(cls_idx, cls_names)
 
-                    if h_res['class'] == 'helmet' and h_res['status'] == 'PASS':
-                        detections['helmet_detected'] = True
-                        helmet_label = "Helmet: WORN"
-                        box_color = (0, 255, 0)
-                    else:
-                        detections['helmet_detected'] = False
-                        helmet_label = "Helmet: NOT WORN"
-                        box_color = (0, 0, 255)
+                                        # Map detected head/helmet bbox to frame coordinates
+                                        bx1 = x_left + int(best_box.xyxy[0][0])
+                                        by1 = y_top + int(best_box.xyxy[0][1])
+                                        bx2 = x_left + int(best_box.xyxy[0][2])
+                                        by2 = y_top + int(best_box.xyxy[0][3])
+                                        detections['helmet_bbox'] = (max(0, bx1), max(0, by1), min(w, bx2), min(h, by2))
+                                        detections['helmet_conf'] = round(best_c, 3)
+                                        detections['helmet_class'] = norm_cls
+                                        model_classified = True
 
-                    cv2.rectangle(annotated_frame, (head_x1, ry1), (head_x2, head_y2), box_color, 2)
-                    h_label_y = max(20, ry1 - 25) if ry1 >= 45 else min(h - 10, head_y2 + 18)
-                    cv2.putText(annotated_frame, helmet_label, (head_x1, h_label_y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
-                    cv2.putText(annotated_frame, helmet_label, (head_x1, h_label_y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+                                        if norm_cls == 'helmet' and best_c >= self.helmet_conf_threshold:
+                                            detections['helmet_status'] = 'PASS'
+                                            detections['helmet_detected'] = True
+                                            detections['helmet_details'] = f"Genuine protective helmet detected (conf: {best_c:.2f})"
+                                            helmet_label = "HELMET: PASS"
+                                            box_color = (0, 255, 0)
+                                        elif norm_cls == 'helmet' and best_c < self.helmet_conf_threshold:
+                                            detections['helmet_status'] = 'NOT VERIFIED'
+                                            detections['helmet_detected'] = False
+                                            detections['helmet_details'] = f"Helmet confidence below required threshold ({best_c:.2f})"
+                                            helmet_label = "HELMET: NOT VERIFIED"
+                                            box_color = (0, 215, 255)
+                                        elif norm_cls in ['no_helmet', 'other_headwear']:
+                                            detections['helmet_status'] = 'FAIL'
+                                            detections['helmet_detected'] = False
+                                            detail_name = "Uncovered head" if norm_cls == 'no_helmet' else "Non-protective headwear"
+                                            detections['helmet_details'] = f"{detail_name} detected ({norm_cls}, conf: {best_c:.2f})"
+                                            helmet_label = "HELMET: FAIL"
+                                            box_color = (0, 0, 255)
+                                        else:
+                                            detections['helmet_status'] = 'NOT VERIFIED'
+                                            detections['helmet_detected'] = False
+                                            helmet_label = "HELMET: NOT VERIFIED"
+                                            box_color = (0, 215, 255)
+                            except Exception as ex:
+                                print(f"[YoloDetector] Upper crop inference error: {ex}")
+
+                    if not model_classified:
+                        head_roi = frame[ry1:head_y2, head_x1:head_x2]
+                        h_res = self.classify_head_roi(head_roi, rider_bbox=(rx1, ry1, rx2, ry2), frame=frame)
+                        norm_stat = 'NOT VERIFIED' if h_res['status'] in ['Needs Review', 'NEEDS_REVIEW'] else h_res['status']
+                        detections['helmet_class'] = h_res['class']
+                        detections['helmet_status'] = norm_stat
+                        detections['helmet_conf'] = h_res['confidence']
+                        detections['helmet_details'] = h_res['details']
+
+                        if h_res['class'] == 'helmet' and norm_stat == 'PASS':
+                            detections['helmet_detected'] = True
+                            helmet_label = "HELMET: PASS"
+                            box_color = (0, 255, 0)
+                        elif norm_stat == 'FAIL':
+                            detections['helmet_detected'] = False
+                            helmet_label = "HELMET: FAIL"
+                            box_color = (0, 0, 255)
+                        else:
+                            detections['helmet_detected'] = False
+                            helmet_label = "HELMET: NOT VERIFIED"
+                            box_color = (0, 215, 255)
+
+                    hx1, hy1, hx2, hy2 = detections['helmet_bbox']
+                    cv2.rectangle(annotated_frame, (hx1, hy1), (hx2, hy2), box_color, 2)
+                    h_label_y = max(20, hy1 - 10) if hy1 >= 25 else min(h - 10, hy2 + 20)
+                    cv2.putText(annotated_frame, helmet_label, (hx1, h_label_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3)
+                    cv2.putText(annotated_frame, helmet_label, (hx1, h_label_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, box_color, 2)
 
                 # Process Motorcycle Detection
                 if best_moto is not None:

@@ -42,14 +42,14 @@ class DrivingMLEvaluator:
         
         # 1. Helmet Compliance (35% weight) - COMPULSORY OVERRIDE
         is_helmet_review = False
-        if helmet_state in ['Needs Review', 'NEEDS_REVIEW', 'UNCLEAR']:
+        if helmet_state in ['Needs Review', 'NEEDS_REVIEW', 'UNCLEAR', 'NOT VERIFIED', 'Not Verified']:
             helmet_points = 0.0
             mistakes.append("Helmet Verification Inconclusive - Manual Safety Review Required (Compulsory Requirement)")
             helmet_failed = True
             is_helmet_review = True
         elif helmet_state == 'FAIL' or not bool(helmet_status):
             helmet_points = 0.0
-            mistakes.append("Helmet Compliance Failed (Mandatory Safety Requirement)")
+            mistakes.append("Helmet Compliance Failed (Mandatory Safety Requirement - NOT QUALIFIED)")
             helmet_failed = True
         else:
             helmet_points = 35.0
@@ -93,11 +93,12 @@ class DrivingMLEvaluator:
             lane_points = 10.0
 
         # 5. Braking Control (5% weight - LOW IMPORTANCE)
-        if braking_state == 'FAIL' or not bool(braking_status):
+        # Evaluates sudden braking detection only. Normal slowing and controlled stopping are accepted.
+        if braking_state == 'FAIL' or (braking_status == 0 and braking_state not in ['NOT VERIFIED', 'Unable to Verify', 'UNCLEAR']):
             braking_points = 0.0
-            mistakes.append("Unsafe Braking Behaviour")
-        elif braking_state == 'UNCLEAR':
-            braking_points = 5.0
+            mistakes.append("Sudden Braking Detected")
+        elif braking_state in ['NOT VERIFIED', 'Unable to Verify', 'UNCLEAR', 'Needs Review', 'NEEDS_REVIEW']:
+            braking_points = 5.0  # Neutral partial credit for inconclusive tracking
         else:
             braking_points = 5.0
 

@@ -144,20 +144,33 @@ def generate_pdf_report(eval_data, candidate_data):
     story.append(Paragraph("Driving Test Module Analysis", section_heading))
 
     auth_str = "PASSED" if eval_data['auth_status'] else "FAILED"
-    if eval_data.get('helmet_state') in ['Needs Review', 'NEEDS_REVIEW', 'UNCLEAR'] or is_review:
-        helm_str = "NEEDS REVIEW (Manual Verification Required)"
-    elif eval_data.get('helmet_status'):
-        helm_str = "PASS (Genuine Protective Helmet Worn)"
+    if eval_data.get('helmet_state') in ['Needs Review', 'NEEDS_REVIEW', 'UNCLEAR', 'NOT VERIFIED', 'Not Verified']:
+        helm_str = "NOT VERIFIED"
+    elif eval_data.get('helmet_status') or eval_data.get('helmet_state') == 'PASS':
+        helm_str = "PASS"
     else:
-        helm_str = "FAIL (No Helmet / Non-Protective Headwear)"
-    if eval_data.get('lane_state') in ['NEEDS_REVIEW', 'Needs Review', 'UNCLEAR']:
-        lane_str = "NEEDS REVIEW (Inconclusive Tracking)"
+        helm_str = "FAIL"
+
+    if eval_data.get('lane_state') in ['NEEDS_REVIEW', 'Needs Review', 'UNCLEAR', 'NOT VERIFIED']:
+        lane_str = "NOT VERIFIED (Inconclusive Tracking)"
     elif eval_data.get('lane_status'):
-        lane_str = "PASS (Inside Lane Boundaries)"
+        lane_str = "PASS"
     else:
-        lane_str = "FAIL (Lane Boundary Contact Violation)"
-    foot_str = "PASS (No Touch)" if eval_data['foot_touch_status'] else "FAIL (Foot Touched Ground)"
+        lane_str = "FAIL (Boundary Violation)"
+
+    foot_count = eval_data.get('foot_touch_count', 0)
+    if eval_data.get('foot_touch_status') and foot_count == 0:
+        foot_str = "NOT DETECTED (0 Events)"
+    else:
+        foot_str = f"DETECTED ({foot_count} Event{'s' if foot_count > 1 else ''})"
     bal_str = "PASS (Stable)" if eval_data['balance_status'] else "FAIL (Unstable / Imbalance)"
+
+    if eval_data.get('braking_state') in ['NOT VERIFIED', 'Unable to Verify', 'Needs Review', 'NEEDS REVIEW', 'NEEDS_REVIEW']:
+        brake_str = "NEEDS REVIEW"
+    elif eval_data.get('braking_state') == 'FAIL' or (eval_data.get('braking_status') == 0 and eval_data.get('braking_status') is not None):
+        brake_str = "FAIL (Sudden Braking Detected)"
+    else:
+        brake_str = "PASS (Normal / Controlled Braking)"
 
     module_data = [
         [Paragraph("<b>Driving Skill Metric</b>", body_style), Paragraph("<b>Status Result</b>", body_style)],
@@ -166,6 +179,7 @@ def generate_pdf_report(eval_data, candidate_data):
         [Paragraph("Lane Line Tracking", body_style), Paragraph(f"<b>{lane_str}</b>", body_style)],
         [Paragraph("Foot-to-Ground Contact", body_style), Paragraph(f"<b>{foot_str}</b>", body_style)],
         [Paragraph("Rider Posture & Balance", body_style), Paragraph(f"<b>{bal_str}</b>", body_style)],
+        [Paragraph("Braking Control", body_style), Paragraph(f"<b>{brake_str}</b>", body_style)],
     ]
 
     mod_table = Table(module_data, colWidths=[4.2*inch, 2.8*inch])

@@ -23,6 +23,7 @@ from models.facenet_auth import facenet_authenticator
 from models.yolo_detector import yolo_detector
 from models.lane_detector import lane_detector
 from models.pose_analyzer import pose_analyzer
+from models.brake_analyzer import brake_analyzer
 from models.ml_evaluator import ml_evaluator
 from utils.pdf_generator import generate_pdf_report
 
@@ -384,6 +385,8 @@ def api_analyze_video():
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         lane_detector.reset()
+        pose_analyzer.reset()
+        brake_analyzer.reset()
 
         frame_count = 0
         total_rider_frames = 0
@@ -433,7 +436,7 @@ def api_analyze_video():
                 elif h_cls == 'no_helmet':
                     no_helmet_count += 1
                     reliable_rider_frames += 1
-                elif h_stat == 'Needs Review':
+                elif h_stat in ['Needs Review', 'NEEDS_REVIEW', 'NOT VERIFIED']:
                     helmet_review_count += 1
                     if h_cls == 'helmet' and h_conf > 0:
                         helmet_confidences.append(h_conf)
@@ -451,7 +454,16 @@ def api_analyze_video():
                 lane_violation_count += 1
 
             # 3. MediaPipe Pose Analysis (Foot touch & balance angle)
-            pose_info, final_frame = pose_analyzer.analyze_pose(lane_frame, yolo_dets['ground_line_y'])
+            # MediaPipe processes clean frame to avoid interference from detector bounding boxes,
+            # while visualizations are composited directly onto display_frame.
+            pose_info, final_frame = pose_analyzer.analyze_pose(
+                frame,
+                ground_y=yolo_dets['ground_line_y'],
+                moto_bbox=yolo_dets['motorcycle_bbox'],
+                rider_bbox=yolo_dets['rider_bbox'],
+                frame_idx=frame_count,
+                display_frame=lane_frame
+            )
             if pose_info['foot_touch']:
                 foot_touch_count += 1
             if pose_info['balance_status'] == 'Unstable':
@@ -459,8 +471,30 @@ def api_analyze_video():
             if abs(pose_info['lean_angle']) > max_lean_angle:
                 max_lean_angle = abs(pose_info['lean_angle'])
 
+            # 4. Brake Control Kinematic Analysis (Sudden braking detection only)
+            brake_info = brake_analyzer.update(
+                frame_idx=frame_count,
+                fps=fps,
+                motorcycle_bbox=yolo_dets['motorcycle_bbox'],
+                rider_bbox=yolo_dets['rider_bbox'],
+                display_frame=final_frame
+            )
+
+            # Useful Debug Logging during video processing
+            if frame_count % (stride * 10) == 0 or pose_info['foot_touch'] or (brake_info and brake_info.get('decel', 0) > 4.0):
+                decel_val = brake_info.get('decel', 0.0) if brake_info else 0.0
+                print(f"[Frame {frame_count:03d}] Head Identified: {yolo_dets.get('head_region_found', False)} | "
+                      f"Helmet: {yolo_dets.get('helmet_class')} (conf: {yolo_dets.get('helmet_conf', 0.0):.2f}) | "
+                      f"L-Foot: {pose_info.get('left_foot_pos')} (dist: {pose_info.get('left_foot_ground_distance')}px) | "
+                      f"R-Foot: {pose_info.get('right_foot_pos')} (dist: {pose_info.get('right_foot_ground_distance')}px) | "
+                      f"Touch Active: {pose_info.get('foot_touch')} | Confirmed Touch: {pose_analyzer.confirmed_events} | "
+                      f"Decel: {decel_val:.2f} l/s² | Brake Violations: {len(brake_analyzer.confirmed_events)}")
+
             if yolo_dets['rider_found']:
-                best_annotated_frame = final_frame
+                if pose_info['foot_touch'] or pose_analyzer.confirmed_events > 0 or len(brake_analyzer.confirmed_events) > 0:
+                    best_annotated_frame = final_frame
+                elif best_annotated_frame is None:
+                    best_annotated_frame = final_frame
             last_annotated_frame = final_frame
 
         cap.release()
@@ -489,11 +523,11 @@ def api_analyze_video():
         actual_helmet_conf = 0.0
 
         if total_rider_frames == 0:
-            helmet_state = 'Needs Review'
+            helmet_state = 'NOT VERIFIED'
             helmet_status = 0
             helmet_notes.append("No rider detected in video frames for helmet verification.")
         elif reliable_rider_frames < 3:
-            helmet_state = 'Needs Review'
+            helmet_state = 'NOT VERIFIED'
             helmet_status = 0
             helmet_notes.append("Head region was blurred, distant, or uncertain throughout video frames (Manual Safety Review Required).")
         else:
@@ -503,31 +537,31 @@ def api_analyze_video():
             other_headwear_ratio = other_headwear_count / reliable_rider_frames
 
             # Case A: Confirmed uncovered head (bare face/scalp without helmet)
-            if no_helmet_count >= 3 and no_helmet_ratio >= 0.35 and no_helmet_count > helmet_pass_count:
+            if no_helmet_count >= 3 and no_helmet_ratio >= 0.25 and no_helmet_count > helmet_pass_count:
                 helmet_state = 'FAIL'
                 helmet_status = 0
                 actual_helmet_conf = 0.0
-                helmet_notes.append("Uncovered head detected - Rider was not wearing a protective motorcycle helmet.")
+                helmet_notes.append("Uncovered head detected - Rider was not wearing a protective motorcycle helmet (Compulsory Safety Violation - NOT QUALIFIED).")
             # Case B: Confirmed non-protective headwear (Cap / Hat / Cloth)
-            elif other_headwear_count >= 3 and other_headwear_ratio >= 0.35 and other_headwear_count > helmet_pass_count:
+            elif other_headwear_count >= 3 and other_headwear_ratio >= 0.25 and other_headwear_count > helmet_pass_count:
                 helmet_state = 'FAIL'
                 helmet_status = 0
                 actual_helmet_conf = 0.0
-                helmet_notes.append("Non-protective headwear (Cap/Hat/Cloth) confirmed on rider (Motorcycle Safety Helmet Required).")
+                helmet_notes.append("Non-protective headwear (Cap/Hat/Cloth) confirmed on rider (Motorcycle Safety Helmet Required - NOT QUALIFIED).")
             # Case C: Confidently detected genuine motorcycle helmet across reliable frames
-            elif helmet_pass_count >= 3 and helmet_pass_ratio >= 0.50 and violation_ratio < 0.35:
+            elif helmet_pass_count >= 3 and helmet_pass_ratio >= 0.50 and violation_ratio < 0.25:
                 avg_conf = round(float(np.mean(helmet_confidences)), 2) if helmet_confidences else 0.0
                 actual_helmet_conf = avg_conf
                 if actual_helmet_conf >= yolo_detector.helmet_conf_threshold:
                     helmet_state = 'PASS'
                     helmet_status = 1
                 else:
-                    helmet_state = 'Needs Review'
+                    helmet_state = 'NOT VERIFIED'
                     helmet_status = 0
-                    helmet_notes.append(f"Helmet detection confidence ({int(actual_helmet_conf * 100)}%) is below the {int(yolo_detector.helmet_conf_threshold * 100)}% threshold (Manual Safety Review Required).")
+                    helmet_notes.append(f"Helmet detection confidence ({int(actual_helmet_conf * 100)}%) is below required {int(yolo_detector.helmet_conf_threshold * 100)}% threshold (Manual Safety Review Required).")
             # Case D: Inconclusive, ambiguous, or mixed detections
             else:
-                helmet_state = 'Needs Review'
+                helmet_state = 'NOT VERIFIED'
                 helmet_status = 0
                 actual_helmet_conf = round(float(np.mean(helmet_confidences)), 2) if helmet_confidences else 0.0
                 helmet_notes.append("Inconclusive helmet detection across video frames (Manual Safety Review Required).")
@@ -544,7 +578,7 @@ def api_analyze_video():
         if lane_state == 'FAIL':
             for v in lane_violations:
                 lane_notes.append(f"LANE_BOUNDARY_VIOLATION: Motorcycle touched/crossed {v['boundary']} boundary at {v['timestamp']}")
-        elif lane_state in ['NEEDS_REVIEW', 'Needs Review']:
+        elif lane_state in ['NEEDS_REVIEW', 'Needs Review', 'NOT VERIFIED']:
             lane_notes.append(f"Lane Tracking Inconclusive: {lane_summary['remarks']} (Manual Review Required)")
 
         # 3. Body Balance (PASS if rider generally stable; fail only on major instability)
@@ -556,24 +590,35 @@ def api_analyze_video():
             balance_state = 'FAIL'
             balance_status = 0
 
-        # 4. Foot Touch Detection (Only confirmed ground contacts count)
-        actual_foot_count = foot_touch_count // 3 if foot_touch_count >= 3 else (1 if foot_touch_count >= 2 else 0)
+        # 4. Foot Touch Detection (Distinct confirmed ground contact events from temporal tracker)
+        actual_foot_count = pose_analyzer.confirmed_events
+        foot_notes = []
         if actual_foot_count == 0:
             foot_touch_state = 'PASS'
             foot_touch_status = 1
         else:
             foot_touch_state = 'FAIL'
             foot_touch_status = 0
+            foot_notes.append(f"Foot Contact Violation: Rider touched ground with foot during motion ({actual_foot_count} confirmed event{'s' if actual_foot_count > 1 else ''}).")
 
-        # 5. Braking Control (Tolerant stopping check: PASS for controlled stopping & normal deceleration)
-        if unstable_ratio < 0.50 and max_lean_angle <= 65.0:
-            braking_state = 'PASS'
-            braking_status = 1
-        else:
-            braking_state = 'FAIL'
-            braking_status = 0
+        # 5. Braking Control (Sudden Braking Detection Only)
+        # Evaluates sudden deceleration and abrupt stops. Normal slowing and controlled stopping are accepted.
+        brake_summary = brake_analyzer.get_summary()
+        braking_state = brake_summary['braking_state']
+        braking_status = brake_summary['braking_status']
+        braking_violations = brake_summary['violations']
+        braking_remarks = brake_summary['remarks']
 
-        # 4. Machine Learning Driving Performance Prediction (Random Forest)
+        braking_notes = []
+        if braking_state == 'FAIL':
+            for v in braking_violations:
+                braking_notes.append(f"Sudden Braking Detected at {v['timestamp']} (Deceleration: {v['decel']} l/s², Speed Drop: {v.get('drop_percent', 0)}%)")
+            if not braking_notes:
+                braking_notes.append("Sudden Braking Detected")
+        elif braking_state in ['NOT VERIFIED', 'Unable to Verify', 'NEEDS REVIEW', 'NEEDS_REVIEW']:
+            braking_notes.append("Brake Control Inconclusive: Needs Review (Insufficient tracking frames)")
+
+        # 6. Machine Learning Driving Performance Prediction (Random Forest)
         ml_res = ml_evaluator.evaluate(
             auth_status=auth_status,
             helmet_status=helmet_status,
@@ -601,13 +646,51 @@ def api_analyze_video():
             if note not in ml_res['mistakes']:
                 ml_res['mistakes'].append(note)
 
+        # Merge specific foot touch violation notes into mistakes list
+        for note in foot_notes:
+            if note not in ml_res['mistakes']:
+                ml_res['mistakes'].append(note)
+
+        # Merge specific braking notes into mistakes list
+        for note in braking_notes:
+            if note not in ml_res['mistakes']:
+                ml_res['mistakes'].append(note)
+
+        # Comprehensive Evaluation Debug Logging
+        print("\n=================== FINAL EVALUATION SUMMARY ===================")
+        print(f"Candidate ID: {candidate_id}")
+        print(f"Total Video Frames Processed: {frame_count} (Sampled: {total_sampled_frames})")
+        print(f"Helmet Status: {helmet_state} (Confidence: {actual_helmet_conf:.2f})")
+        print(f"  - Genuine Helmet Frames: {helmet_pass_count}")
+        print(f"  - Bare Head (No Helmet) Frames: {no_helmet_count}")
+        print(f"  - Non-Protective Headwear Frames: {other_headwear_count}")
+        print(f"  - Review / Unverified Frames: {helmet_review_count}")
+        print(f"Foot-Touch Status: {'DETECTED' if actual_foot_count > 0 else 'NOT DETECTED'}")
+        print(f"  - Confirmed Foot-Touch Events: {actual_foot_count}")
+        print(f"Lane Violations: {normalized_lane_count}")
+        print(f"Body Balance: {balance_state} (Max Lean: {max_lean_angle:.1f} deg)")
+        print(f"Braking Control: {braking_state} ({braking_remarks})")
+        print(f"  - Confirmed Sudden Braking Events: {brake_summary['confirmed_events']}")
+        print(f"  - Max Observed Speed: {brake_summary['max_speed']} l/s")
+        print(f"  - Max Deceleration: {brake_summary['max_deceleration']} l/s²")
+        print(f"Overall Driving Score: {ml_res['overall_score']}/100")
+        print(f"Final Qualification Result: {ml_res['final_result']}")
+        print("================================================================\n")
+
         eval_record = {
             'candidate_id': candidate_id,
             'auth_status': auth_status,
             'helmet_status': helmet_status,
+            'helmet_state': helmet_state,
             'lane_status': lane_status,
+            'lane_state': lane_state,
             'foot_touch_status': foot_touch_status,
+            'foot_touch_state': foot_touch_state,
             'balance_status': balance_status,
+            'balance_state': balance_state,
+            'braking_status': braking_status,
+            'braking_state': braking_state,
+            'braking_remarks': braking_remarks,
             'overall_result': ml_res['final_result'],
             'rf_prediction': ml_res['rf_prediction'],
             'overall_score': ml_res['overall_score'],
@@ -640,6 +723,9 @@ def api_analyze_video():
             'foot_touch_state': foot_touch_state,
             'lane_state': lane_state,
             'braking_state': braking_state,
+            'braking_remarks': braking_remarks,
+            'braking_violations': braking_violations,
+            'sudden_braking_events': brake_summary['confirmed_events'],
             'lane_violation_count': normalized_lane_count,
             'lane_violations': lane_violations,
             'foot_touch_count': actual_foot_count,
